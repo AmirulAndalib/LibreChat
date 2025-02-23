@@ -1,21 +1,31 @@
-import React from 'react';
-import { Listbox, Transition } from '@headlessui/react';
-import type { Option } from '~/common';
-import CheckMark from '../svg/CheckMark';
+import React, { useRef } from 'react';
+import {
+  Label,
+  Listbox,
+  Transition,
+  ListboxButton,
+  ListboxOption,
+  ListboxOptions,
+} from '@headlessui/react';
+import type { Option, OptionWithIcon, DropdownValueSetter } from '~/common';
+import CheckMark from '~/components/svg/CheckMark';
+import { useMultiSearch } from './MultiSearch';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils/';
 
 type SelectDropDownProps = {
   id?: string;
   title?: string;
-  value: string | null | Option;
   disabled?: boolean;
-  setValue: (value: string) => void;
-  availableValues: string[] | Option[];
+  value: string | null | Option | OptionWithIcon;
+  setValue: DropdownValueSetter | ((value: string) => void);
+  tabIndex?: number;
+  availableValues?: string[] | Option[] | OptionWithIcon[];
   emptyTitle?: boolean;
   showAbove?: boolean;
   showLabel?: boolean;
   iconSide?: 'left' | 'right';
+  optionIconSide?: 'left' | 'right';
   renderOption?: () => React.ReactNode;
   containerClassName?: string;
   currentValueClass?: string;
@@ -23,7 +33,24 @@ type SelectDropDownProps = {
   optionsClass?: string;
   subContainerClassName?: string;
   className?: string;
+  placeholder?: string;
+  searchClassName?: string;
+  searchPlaceholder?: string;
+  showOptionIcon?: boolean;
 };
+
+function getOptionText(option: string | Option | OptionWithIcon): string {
+  if (typeof option === 'string') {
+    return option;
+  }
+  if ('label' in option) {
+    return option.label ?? '';
+  }
+  if ('value' in option) {
+    return (option.value ?? '') + '';
+  }
+  return '';
+}
 
 function SelectDropDown({
   title: _title,
@@ -35,6 +62,8 @@ function SelectDropDown({
   showLabel = true,
   emptyTitle = false,
   iconSide = 'right',
+  optionIconSide = 'left',
+  placeholder,
   containerClassName,
   optionsListClass,
   optionsClass,
@@ -42,6 +71,9 @@ function SelectDropDown({
   subContainerClassName,
   className,
   renderOption,
+  searchClassName,
+  searchPlaceholder,
+  showOptionIcon = false,
 }: SelectDropDownProps) {
   const localize = useLocalize();
   const transitionProps = { className: 'top-full mt-3' };
@@ -50,40 +82,62 @@ function SelectDropDown({
   }
 
   let title = _title;
-
   if (emptyTitle) {
     title = '';
-  } else if (!title) {
+  } else if (!(title ?? '')) {
     title = localize('com_ui_model');
   }
+  const values = availableValues ?? [];
+
+  // Enable searchable select if enough items are provided.
+  const [filteredValues, searchRender] = useMultiSearch<string[] | Option[]>({
+    availableOptions: values,
+    placeholder: searchPlaceholder,
+    getTextKeyOverride: (option) => getOptionText(option).toUpperCase(),
+    className: searchClassName,
+    disabled,
+  });
+  const hasSearchRender = searchRender != null;
+  const options = hasSearchRender ? filteredValues : values;
+  const renderIcon = showOptionIcon && value != null && (value as OptionWithIcon).icon != null;
+
+  const buttonRef = useRef<HTMLButtonElement>(null);
 
   return (
-    <div className={cn('flex items-center justify-center gap-2 ', containerClassName ?? '')}>
+    <div className={cn('flex items-center justify-center gap-2', containerClassName ?? '')}>
       <div className={cn('relative w-full', subContainerClassName ?? '')}>
         <Listbox value={value} onChange={setValue} disabled={disabled}>
           {({ open }) => (
             <>
-              <Listbox.Button
+              <ListboxButton
+                ref={buttonRef}
                 data-testid="select-dropdown-button"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (!open && buttonRef.current) {
+                      buttonRef.current.click();
+                    }
+                  }
+                }}
                 className={cn(
-                  'relative flex w-full cursor-default flex-col rounded-md border border-black/10 bg-white py-2 pl-3 pr-10 text-left focus:outline-none focus:ring-0 focus:ring-offset-0 dark:border-white/20 dark:bg-gray-800 sm:text-sm',
+                  'relative flex w-full cursor-default flex-col rounded-md border border-black/10 bg-white py-2 pl-3 pr-10 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:bg-white dark:border-gray-600 dark:bg-gray-700 sm:text-sm',
                   className ?? '',
                 )}
               >
-                {' '}
                 {showLabel && (
-                  <Listbox.Label
-                    className="block text-xs text-gray-700 dark:text-gray-500 "
+                  <Label
+                    className="block text-xs text-gray-700 dark:text-gray-500"
                     id="headlessui-listbox-label-:r1:"
                     data-headlessui-state=""
                   >
                     {title}
-                  </Listbox.Label>
+                  </Label>
                 )}
                 <span className="inline-flex w-full truncate">
                   <span
                     className={cn(
-                      'flex h-6 items-center gap-1 truncate text-sm text-gray-900 dark:text-white',
+                      'flex h-6 items-center gap-1 truncate text-sm text-gray-800 dark:text-white',
                       !showLabel ? 'text-xs' : '',
                       currentValueClass ?? '',
                     )}
@@ -91,7 +145,25 @@ function SelectDropDown({
                     {!showLabel && !emptyTitle && (
                       <span className="text-xs text-gray-700 dark:text-gray-500">{title}:</span>
                     )}
-                    {typeof value !== 'string' && value ? value?.label ?? '' : value ?? ''}
+                    {renderIcon && optionIconSide !== 'right' && (
+                      <span className="icon-md flex items-center">
+                        {(value as OptionWithIcon).icon}
+                      </span>
+                    )}
+                    {renderIcon && (
+                      <span className="icon-md absolute right-0 mr-8 flex items-center">
+                        {(value as OptionWithIcon).icon}
+                      </span>
+                    )}
+                    {(() => {
+                      if (!value) {
+                        return <span className="text-text-secondary">{placeholder}</span>;
+                      }
+                      if (typeof value !== 'string') {
+                        return value.label ?? '';
+                      }
+                      return value;
+                    })()}
                   </span>
                 </span>
                 <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2">
@@ -102,7 +174,7 @@ function SelectDropDown({
                     viewBox="0 0 24 24"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    className="h-4 w-4  text-gray-400"
+                    className="h-4 w-4 text-gray-400"
                     height="1em"
                     width="1em"
                     xmlns="http://www.w3.org/2000/svg"
@@ -111,7 +183,7 @@ function SelectDropDown({
                     <polyline points="6 9 12 15 18 9"></polyline>
                   </svg>
                 </span>
-              </Listbox.Button>
+              </ListboxButton>
               <Transition
                 show={open}
                 as={React.Fragment}
@@ -120,59 +192,76 @@ function SelectDropDown({
                 leaveTo="opacity-0"
                 {...transitionProps}
               >
-                <Listbox.Options
+                <ListboxOptions
                   className={cn(
-                    'absolute z-10 mt-2 max-h-60 w-full overflow-auto rounded bg-white text-base text-xs border ring-black/10 focus:outline-none dark:bg-gray-800 dark:ring-white/20 dark:last:border-0 md:w-[100%]',
+                    'absolute z-10 mt-2 max-h-60 w-full overflow-auto rounded border bg-white text-xs ring-black/10 dark:border-gray-600 dark:bg-gray-700 dark:ring-white/20 md:w-[100%]',
                     optionsListClass ?? '',
                   )}
                 >
                   {renderOption && (
-                    <Listbox.Option
+                    <ListboxOption
                       key={'listbox-render-option'}
                       value={null}
                       className={cn(
-                        'group relative flex h-[42px] cursor-pointer select-none items-center overflow-hidden border-b border-black/10 pl-3 pr-9 text-gray-900 last:border-0 hover:bg-gray-20 dark:border-white/20 dark:text-white dark:hover:bg-gray-700',
+                        'group relative flex h-[42px] cursor-pointer select-none items-center overflow-hidden pl-3 pr-9 text-gray-800 hover:bg-gray-20 dark:text-white dark:hover:bg-gray-700',
                         optionsClass ?? '',
                       )}
                     >
                       {renderOption()}
-                    </Listbox.Option>
+                    </ListboxOption>
                   )}
-                  {availableValues.map((option: string | Option, i: number) => {
+                  {searchRender}
+                  {options.map((option: string | Option, i: number) => {
                     if (!option) {
                       return null;
                     }
-
-                    const currentLabel = typeof option === 'string' ? option : option?.label ?? '';
-                    const currentValue = typeof option === 'string' ? option : option?.value ?? '';
+                    const currentLabel =
+                      typeof option === 'string' ? option : (option.label ?? option.value ?? '');
+                    const currentValue = typeof option === 'string' ? option : (option.value ?? '');
+                    const currentIcon =
+                      typeof option === 'string'
+                        ? null
+                        : ((option.icon as React.ReactNode) ?? null);
                     let activeValue: string | number | null | Option = value;
                     if (typeof activeValue !== 'string') {
                       activeValue = activeValue?.value ?? '';
                     }
-
                     return (
-                      <Listbox.Option
+                      <ListboxOption
                         key={i}
-                        value={currentValue}
-                        className={cn(
-                          'group relative flex h-[42px] cursor-pointer select-none items-center overflow-hidden border-b border-black/10 pl-3 pr-9 text-gray-900 last:border-0 hover:bg-gray-20 dark:border-white/20 dark:text-white dark:hover:bg-gray-700',
-                          optionsClass ?? '',
-                        )}
+                        value={option}
+                        className={({ active }) =>
+                          cn(
+                            'group relative flex h-[42px] cursor-pointer select-none items-center overflow-hidden pl-3 pr-9 text-gray-800 hover:bg-gray-20 dark:text-white dark:hover:bg-gray-600',
+                            active ? 'bg-surface-active text-text-primary' : '',
+                            optionsClass ?? '',
+                          )
+                        }
                       >
                         <span className="flex items-center gap-1.5 truncate">
                           <span
                             className={cn(
-                              'flex h-6 items-center gap-1 text-gray-800 dark:text-gray-100',
+                              'flex h-6 items-center gap-1 text-gray-800 dark:text-gray-200',
                               option === value ? 'font-semibold' : '',
                               iconSide === 'left' ? 'ml-4' : '',
                             )}
                           >
+                            {currentIcon != null && (
+                              <span
+                                className={cn(
+                                  'mr-1',
+                                  optionIconSide === 'right' ? 'absolute right-0 pr-2' : '',
+                                )}
+                              >
+                                {currentIcon}
+                              </span>
+                            )}
                             {currentLabel}
                           </span>
                           {currentValue === activeValue && (
                             <span
                               className={cn(
-                                'absolute inset-y-0 flex items-center text-gray-800 dark:text-gray-100',
+                                'absolute inset-y-0 flex items-center text-gray-800 dark:text-gray-200',
                                 iconSide === 'left' ? 'left-0 pl-2' : 'right-0 pr-3',
                               )}
                             >
@@ -180,10 +269,10 @@ function SelectDropDown({
                             </span>
                           )}
                         </span>
-                      </Listbox.Option>
+                      </ListboxOption>
                     );
                   })}
-                </Listbox.Options>
+                </ListboxOptions>
               </Transition>
             </>
           )}

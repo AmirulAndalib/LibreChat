@@ -1,26 +1,28 @@
-const User = require('~/models/User');
+const { generate2FATempToken } = require('~/server/services/twoFactorService');
 const { setAuthTokens } = require('~/server/services/AuthService');
 const { logger } = require('~/config');
 
 const loginController = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
-
-    // If user doesn't exist, return error
-    if (!user) {
-      // typeof user !== User) { // this doesn't seem to resolve the User type ??
+    if (!req.user) {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
-    const token = await setAuthTokens(user._id, res);
+    if (req.user.backupCodes != null && req.user.backupCodes.length > 0) {
+      const tempToken = generate2FATempToken(req.user._id);
+      return res.status(200).json({ twoFAPending: true, tempToken });
+    }
+
+    const { password: _p, totpSecret: _t, __v, ...user } = req.user;
+    user.id = user._id.toString();
+
+    const token = await setAuthTokens(req.user._id, res);
 
     return res.status(200).send({ token, user });
   } catch (err) {
     logger.error('[loginController]', err);
+    return res.status(500).json({ message: 'Something went wrong' });
   }
-
-  // Generic error messages are safer
-  return res.status(500).json({ message: 'Something went wrong' });
 };
 
 module.exports = {

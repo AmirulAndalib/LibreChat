@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { useForm, FormProvider } from 'react-hook-form';
-import { EModelEndpoint, alternateName } from 'librechat-data-provider';
-import { useGetEndpointsQuery } from 'librechat-data-provider/react-query';
+import { EModelEndpoint, alternateName, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TDialogProps } from '~/common';
-import DialogTemplate from '~/components/ui/DialogTemplate';
+import OGDialogTemplate from '~/components/ui/OGDialogTemplate';
+import { useGetEndpointsQuery } from '~/data-provider';
+import { OGDialog, Dropdown } from '~/components/ui';
 import { RevokeKeysButton } from '~/components/Nav';
-import { Dialog, Dropdown } from '~/components/ui';
 import { useUserKey, useLocalize } from '~/hooks';
 import { useToastContext } from '~/Providers';
 import CustomConfig from './CustomEndpoint';
@@ -20,16 +20,28 @@ const endpointComponents = {
   [EModelEndpoint.custom]: CustomConfig,
   [EModelEndpoint.azureOpenAI]: OpenAIConfig,
   [EModelEndpoint.gptPlugins]: OpenAIConfig,
+  [EModelEndpoint.assistants]: OpenAIConfig,
+  [EModelEndpoint.azureAssistants]: OpenAIConfig,
   default: OtherConfig,
 };
 
+const formSet: Set<string> = new Set([
+  EModelEndpoint.openAI,
+  EModelEndpoint.custom,
+  EModelEndpoint.azureOpenAI,
+  EModelEndpoint.gptPlugins,
+  EModelEndpoint.assistants,
+  EModelEndpoint.azureAssistants,
+]);
+
 const EXPIRY = {
-  THIRTY_MINUTES: { display: 'in 30 minutes', value: 30 * 60 * 1000 },
-  TWO_HOURS: { display: 'in 2 hours', value: 2 * 60 * 60 * 1000 },
-  TWELVE_HOURS: { display: 'in 12 hours', value: 12 * 60 * 60 * 1000 },
-  ONE_DAY: { display: 'in 1 day', value: 24 * 60 * 60 * 1000 },
-  ONE_WEEK: { display: 'in 7 days', value: 7 * 24 * 60 * 60 * 1000 },
-  ONE_MONTH: { display: 'in 30 days', value: 30 * 24 * 60 * 60 * 1000 },
+  THIRTY_MINUTES: { label: 'in 30 minutes', value: 30 * 60 * 1000 },
+  TWO_HOURS: { label: 'in 2 hours', value: 2 * 60 * 60 * 1000 },
+  TWELVE_HOURS: { label: 'in 12 hours', value: 12 * 60 * 60 * 1000 },
+  ONE_DAY: { label: 'in 1 day', value: 24 * 60 * 60 * 1000 },
+  ONE_WEEK: { label: 'in 7 days', value: 7 * 24 * 60 * 60 * 1000 },
+  ONE_MONTH: { label: 'in 30 days', value: 30 * 24 * 60 * 60 * 1000 },
+  NEVER: { label: 'never', value: 0 },
 };
 
 const SetKeyDialog = ({
@@ -47,6 +59,10 @@ const SetKeyDialog = ({
     defaultValues: {
       apiKey: '',
       baseURL: '',
+      azureOpenAIApiKey: '',
+      azureOpenAIApiInstanceName: '',
+      azureOpenAIApiDeploymentName: '',
+      azureOpenAIApiVersion: '',
       // TODO: allow endpoint definitions from user
       // name: '',
       // TODO: add custom endpoint models defined by user
@@ -56,7 +72,7 @@ const SetKeyDialog = ({
 
   const [userKey, setUserKey] = useState('');
   const { data: endpointsConfig } = useGetEndpointsQuery();
-  const [expiresAtLabel, setExpiresAtLabel] = useState(EXPIRY.TWELVE_HOURS.display);
+  const [expiresAtLabel, setExpiresAtLabel] = useState(EXPIRY.TWELVE_HOURS.label);
   const { getExpiry, saveUserKey } = useUserKey(endpoint);
   const { showToast } = useToastContext();
   const localize = useLocalize();
@@ -68,19 +84,41 @@ const SetKeyDialog = ({
   };
 
   const submit = () => {
-    const selectedOption = expirationOptions.find((option) => option.display === expiresAtLabel);
-    const expiresAt = Date.now() + (selectedOption ? selectedOption.value : 0);
+    const selectedOption = expirationOptions.find((option) => option.label === expiresAtLabel);
+    let expiresAt;
+
+    if (selectedOption?.value === 0) {
+      expiresAt = null;
+    } else {
+      expiresAt = Date.now() + (selectedOption ? selectedOption.value : 0);
+    }
 
     const saveKey = (key: string) => {
       saveUserKey(key, expiresAt);
       onOpenChange(false);
     };
 
-    if (endpoint === EModelEndpoint.custom || endpointType === EModelEndpoint.custom) {
+    if (formSet.has(endpoint) || formSet.has(endpointType ?? '')) {
       // TODO: handle other user provided options besides baseURL and apiKey
       methods.handleSubmit((data) => {
+        const isAzure = endpoint === EModelEndpoint.azureOpenAI;
+        const isOpenAIBase =
+          isAzure ||
+          endpoint === EModelEndpoint.openAI ||
+          endpoint === EModelEndpoint.gptPlugins ||
+          isAssistantsEndpoint(endpoint);
+        if (isAzure) {
+          data.apiKey = 'n/a';
+        }
+
         const emptyValues = Object.keys(data).filter((key) => {
-          if (key === 'baseURL' && !userProvideURL) {
+          if (!isAzure && key.startsWith('azure')) {
+            return false;
+          }
+          if (isOpenAIBase && key === 'baseURL') {
+            return false;
+          }
+          if (key === 'baseURL' && !(userProvideURL ?? false)) {
             return false;
           }
           return data[key] === '';
@@ -92,10 +130,22 @@ const SetKeyDialog = ({
             status: 'error',
           });
           onOpenChange(true);
-        } else {
-          saveKey(JSON.stringify(data));
-          methods.reset();
+          return;
         }
+
+        const { apiKey, baseURL, ...azureOptions } = data;
+        const userProvidedData = { apiKey, baseURL };
+        if (isAzure) {
+          userProvidedData.apiKey = JSON.stringify({
+            azureOpenAIApiKey: azureOptions.azureOpenAIApiKey,
+            azureOpenAIApiInstanceName: azureOptions.azureOpenAIApiInstanceName,
+            azureOpenAIApiDeploymentName: azureOptions.azureOpenAIApiDeploymentName,
+            azureOpenAIApiVersion: azureOptions.azureOpenAIApiVersion,
+          });
+        }
+
+        saveKey(JSON.stringify(userProvidedData));
+        methods.reset();
       })();
       return;
     }
@@ -110,32 +160,35 @@ const SetKeyDialog = ({
   const config = endpointsConfig?.[endpoint];
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogTemplate
+    <OGDialog open={open} onOpenChange={onOpenChange}>
+      <OGDialogTemplate
         title={`${localize('com_endpoint_config_key_for')} ${alternateName[endpoint] ?? endpoint}`}
-        className="w-full max-w-[650px] sm:w-3/4 md:w-3/4 lg:w-3/4"
+        className="w-11/12 max-w-2xl"
+        showCancelButton={false}
         main={
           <div className="grid w-full items-center gap-2">
             <small className="text-red-600">
-              {`${localize('com_endpoint_config_key_encryption')} ${
-                !expiryTime
-                  ? localize('com_endpoint_config_key_expiry')
-                  : `${new Date(expiryTime).toLocaleString()}`
-              }`}
+              {expiryTime === 'never'
+                ? localize('com_endpoint_config_key_never_expires')
+                : `${localize('com_endpoint_config_key_encryption')} ${new Date(
+                  expiryTime ?? 0,
+                ).toLocaleString()}`}
             </small>
             <Dropdown
               label="Expires "
               value={expiresAtLabel}
               onChange={handleExpirationChange}
-              options={expirationOptions.map((option) => option.display)}
-              width={185}
+              options={expirationOptions.map((option) => option.label)}
+              sizeClasses="w-[185px]"
+              portal={false}
             />
+            <div className="mt-2" />
             <FormProvider {...methods}>
               <EndpointComponent
                 userKey={userKey}
                 setUserKey={setUserKey}
                 endpoint={
-                  endpoint === EModelEndpoint.gptPlugins && config?.azure
+                  endpoint === EModelEndpoint.gptPlugins && (config?.azure ?? false)
                     ? EModelEndpoint.azureOpenAI
                     : endpoint
                 }
@@ -147,14 +200,18 @@ const SetKeyDialog = ({
         }
         selection={{
           selectHandler: submit,
-          selectClasses: 'bg-green-600 hover:bg-green-700 dark:hover:bg-green-800 text-white',
+          selectClasses: 'btn btn-primary',
           selectText: localize('com_ui_submit'),
         }}
         leftButtons={
-          <RevokeKeysButton endpoint={endpoint} showText={false} disabled={!expiryTime} />
+          <RevokeKeysButton
+            endpoint={endpoint}
+            disabled={!(expiryTime ?? '')}
+            setDialogOpen={onOpenChange}
+          />
         }
       />
-    </Dialog>
+    </OGDialog>
   );
 };
 

@@ -1,12 +1,14 @@
-const { availableTools } = require('~/app/clients/tools');
-const { addOpenAPISpecs } = require('~/app/clients/tools/util/addOpenAPISpecs');
-const { openAIApiKey, azureOpenAIApiKey, useAzurePlugins, userProvidedOpenAI, googleKey } =
-  require('./EndpointService').config;
+const { EModelEndpoint } = require('librechat-data-provider');
+const { isUserProvided } = require('~/server/utils');
+const { config } = require('./EndpointService');
+
+const { openAIApiKey, azureOpenAIApiKey, useAzurePlugins, userProvidedOpenAI, googleKey } = config;
 
 /**
  * Load async endpoints and return a configuration object
+ * @param {Express.Request} req - The request object
  */
-async function loadAsyncEndpoints() {
+async function loadAsyncEndpoints(req) {
   let i = 0;
   let serviceKey, googleUserProvides;
   try {
@@ -17,31 +19,26 @@ async function loadAsyncEndpoints() {
     }
   }
 
-  if (googleKey === 'user_provided') {
+  if (isUserProvided(googleKey)) {
     googleUserProvides = true;
     if (i <= 1) {
       i++;
     }
   }
 
-  const tools = await addOpenAPISpecs(availableTools);
-  function transformToolsToMap(tools) {
-    return tools.reduce((map, obj) => {
-      map[obj.pluginKey] = obj.name;
-      return map;
-    }, {});
-  }
-  const plugins = transformToolsToMap(tools);
-
   const google = serviceKey || googleKey ? { userProvide: googleUserProvides } : false;
 
+  const useAzure = req.app.locals[EModelEndpoint.azureOpenAI]?.plugins;
   const gptPlugins =
-    openAIApiKey || azureOpenAIApiKey
+    useAzure || openAIApiKey || azureOpenAIApiKey
       ? {
-        plugins,
         availableAgents: ['classic', 'functions'],
-        userProvide: userProvidedOpenAI,
-        azure: useAzurePlugins,
+        userProvide: useAzure ? false : userProvidedOpenAI,
+        userProvideURL: useAzure
+          ? false
+          : config[EModelEndpoint.openAI]?.userProvideURL ||
+              config[EModelEndpoint.azureOpenAI]?.userProvideURL,
+        azure: useAzurePlugins || useAzure,
       }
       : false;
 

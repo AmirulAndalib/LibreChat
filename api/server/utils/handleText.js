@@ -1,60 +1,61 @@
+const path = require('path');
+const crypto = require('crypto');
+const {
+  Capabilities,
+  EModelEndpoint,
+  isAgentsEndpoint,
+  AgentCapabilities,
+  isAssistantsEndpoint,
+  defaultRetrievalModels,
+  defaultAssistantsVersion,
+} = require('librechat-data-provider');
+const { Providers } = require('@librechat/agents');
 const partialRight = require('lodash/partialRight');
 const { sendMessage } = require('./streamResponse');
-const { getCitations, citeText } = require('./citations');
-const citationRegex = /\[\^\d+?\^]/g;
+
+/** Helper function to escape special characters in regex
+ * @param {string} string - The string to escape.
+ * @returns {string} The escaped string.
+ */
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 const addSpaceIfNeeded = (text) => (text.length > 0 && !text.endsWith(' ') ? text + ' ' : text);
 
-const createOnProgress = ({ generation = '', onProgress: _onProgress }) => {
+const base = { message: true, initial: true };
+const createOnProgress = (
+  { generation = '', onProgress: _onProgress } = {
+    generation: '',
+    onProgress: null,
+  },
+) => {
   let i = 0;
-  let code = '';
-  let precode = '';
-  let codeBlock = false;
   let tokens = addSpaceIfNeeded(generation);
 
-  const progressCallback = async (partial, { res, text, bing = false, ...rest }) => {
-    let chunk = partial === text ? '' : partial;
-    tokens += chunk;
-    precode += chunk;
-    tokens = tokens.replaceAll('[DONE]', '');
+  const basePayload = Object.assign({}, base, { text: tokens || '' });
 
-    if (codeBlock) {
-      code += chunk;
+  const progressCallback = (chunk, { res, ...rest }) => {
+    basePayload.text = basePayload.text + chunk;
+
+    const payload = Object.assign({}, basePayload, rest);
+    sendMessage(res, payload);
+    if (_onProgress) {
+      _onProgress(payload);
     }
-
-    if (precode.includes('```') && codeBlock) {
-      codeBlock = false;
-      precode = precode.replace(/```/g, '');
-      code = '';
+    if (i === 0) {
+      basePayload.initial = false;
     }
-
-    if (precode.includes('```') && code === '') {
-      precode = precode.replace(/```/g, '');
-      codeBlock = true;
-    }
-
-    if (tokens.match(/^\n(?!:::plugins:::)/)) {
-      tokens = tokens.replace(/^\n/, '');
-    }
-
-    if (bing) {
-      tokens = citeText(tokens, true);
-    }
-
-    const payload = { text: tokens, message: true, initial: i === 0, ...rest };
-    sendMessage(res, { ...payload, text: tokens });
-    _onProgress && _onProgress(payload);
     i++;
   };
 
   const sendIntermediateMessage = (res, payload, extraTokens = '') => {
-    tokens += extraTokens;
-    sendMessage(res, {
-      text: tokens?.length === 0 ? '' : tokens,
-      message: true,
-      initial: i === 0,
-      ...payload,
-    });
+    basePayload.text = basePayload.text + extraTokens;
+    const message = Object.assign({}, basePayload, payload);
+    sendMessage(res, message);
+    if (i === 0) {
+      basePayload.initial = false;
+    }
     i++;
   };
 
@@ -63,24 +64,15 @@ const createOnProgress = ({ generation = '', onProgress: _onProgress }) => {
   };
 
   const getPartialText = () => {
-    return tokens;
+    return basePayload.text;
   };
 
   return { onProgress, getPartialText, sendIntermediateMessage };
 };
 
-const handleText = async (response, bing = false) => {
+const handleText = async (response) => {
   let { text } = response;
   response.text = text;
-
-  if (bing) {
-    const links = getCitations(response);
-    if (response.text.match(citationRegex)?.length > 0) {
-      text = citeText(response);
-    }
-    text += links?.length > 0 ? `\n- ${links}` : '';
-  }
-
   return text;
 };
 
@@ -173,25 +165,107 @@ function isEnabled(value) {
 const isUserProvided = (value) => value === 'user_provided';
 
 /**
- * Extracts the value of an environment variable from a string.
- * @param {string} value - The value to be processed, possibly containing an env variable placeholder.
- * @returns {string} - The actual value from the environment variable or the original value.
+ * Generate the configuration for a given key and base URL.
+ * @param {string} key
+ * @param {string} [baseURL]
+ * @param {string} [endpoint]
+ * @returns {boolean | { userProvide: boolean, userProvideURL?: boolean }}
  */
-function extractEnvVariable(value) {
-  const envVarMatch = value.match(/^\${(.+)}$/);
-  if (envVarMatch) {
-    return process.env[envVarMatch[1]] || value;
+function generateConfig(key, baseURL, endpoint) {
+  if (!key) {
+    return false;
   }
-  return value;
+
+  /** @type {{ userProvide: boolean, userProvideURL?: boolean }} */
+  const config = { userProvide: isUserProvided(key) };
+
+  if (baseURL) {
+    config.userProvideURL = isUserProvided(baseURL);
+  }
+
+  const assistants = isAssistantsEndpoint(endpoint);
+  const agents = isAgentsEndpoint(endpoint);
+  if (assistants) {
+    config.retrievalModels = defaultRetrievalModels;
+    config.capabilities = [
+      Capabilities.code_interpreter,
+      Capabilities.image_vision,
+      Capabilities.retrieval,
+      Capabilities.actions,
+      Capabilities.tools,
+    ];
+  }
+
+  if (agents) {
+    config.capabilities = [
+      AgentCapabilities.execute_code,
+      AgentCapabilities.file_search,
+      AgentCapabilities.artifacts,
+      AgentCapabilities.actions,
+      AgentCapabilities.tools,
+    ];
+  }
+
+  if (assistants && endpoint === EModelEndpoint.azureAssistants) {
+    config.version = defaultAssistantsVersion.azureAssistants;
+  } else if (assistants) {
+    config.version = defaultAssistantsVersion.assistants;
+  }
+
+  return config;
+}
+
+/**
+ * Normalize the endpoint name to system-expected value.
+ * @param {string} name
+ * @returns {string}
+ */
+function normalizeEndpointName(name = '') {
+  return name.toLowerCase() === Providers.OLLAMA ? Providers.OLLAMA : name;
+}
+
+/**
+ * Sanitize a filename by removing any directory components, replacing non-alphanumeric characters
+ * @param {string} inputName
+ * @returns {string}
+ */
+function sanitizeFilename(inputName) {
+  // Remove any directory components
+  let name = path.basename(inputName);
+
+  // Replace any non-alphanumeric characters except for '.' and '-'
+  name = name.replace(/[^a-zA-Z0-9.-]/g, '_');
+
+  // Ensure the name doesn't start with a dot (hidden file in Unix-like systems)
+  if (name.startsWith('.') || name === '') {
+    name = '_' + name;
+  }
+
+  // Limit the length of the filename
+  const MAX_LENGTH = 255;
+  if (name.length > MAX_LENGTH) {
+    const ext = path.extname(name);
+    const nameWithoutExt = path.basename(name, ext);
+    name =
+      nameWithoutExt.slice(0, MAX_LENGTH - ext.length - 7) +
+      '-' +
+      crypto.randomBytes(3).toString('hex') +
+      ext;
+  }
+
+  return name;
 }
 
 module.exports = {
-  createOnProgress,
   isEnabled,
   handleText,
   formatSteps,
+  escapeRegExp,
   formatAction,
-  addSpaceIfNeeded,
   isUserProvided,
-  extractEnvVariable,
+  generateConfig,
+  addSpaceIfNeeded,
+  createOnProgress,
+  sanitizeFilename,
+  normalizeEndpointName,
 };

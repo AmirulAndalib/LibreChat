@@ -1,4 +1,4 @@
-const { isEnabled, extractEnvVariable } = require('./handleText');
+const { isEnabled, sanitizeFilename } = require('./handleText');
 
 describe('isEnabled', () => {
   test('should return true when input is "true"', () => {
@@ -48,51 +48,52 @@ describe('isEnabled', () => {
   test('should return false when input is an array', () => {
     expect(isEnabled([])).toBe(false);
   });
+});
 
-  describe('extractEnvVariable', () => {
-    const originalEnv = process.env;
+jest.mock('crypto', () => ({
+  randomBytes: jest.fn().mockReturnValue(Buffer.from('abc123', 'hex')),
+}));
 
-    beforeEach(() => {
-      jest.resetModules();
-      process.env = { ...originalEnv };
-    });
+describe('sanitizeFilename', () => {
+  test('removes directory components (1/2)', () => {
+    expect(sanitizeFilename('/path/to/file.txt')).toBe('file.txt');
+  });
 
-    afterAll(() => {
-      process.env = originalEnv;
-    });
+  test('removes directory components (2/2)', () => {
+    expect(sanitizeFilename('../../../../file.txt')).toBe('file.txt');
+  });
 
-    test('should return the value of the environment variable', () => {
-      process.env.TEST_VAR = 'test_value';
-      expect(extractEnvVariable('${TEST_VAR}')).toBe('test_value');
-    });
+  test('replaces non-alphanumeric characters', () => {
+    expect(sanitizeFilename('file name@#$.txt')).toBe('file_name___.txt');
+  });
 
-    test('should return the original string if the envrionment variable is not defined correctly', () => {
-      process.env.TEST_VAR = 'test_value';
-      expect(extractEnvVariable('${ TEST_VAR }')).toBe('${ TEST_VAR }');
-    });
+  test('preserves dots and hyphens', () => {
+    expect(sanitizeFilename('file-name.with.dots.txt')).toBe('file-name.with.dots.txt');
+  });
 
-    test('should return the original string if environment variable is not set', () => {
-      expect(extractEnvVariable('${NON_EXISTENT_VAR}')).toBe('${NON_EXISTENT_VAR}');
-    });
+  test('prepends underscore to filenames starting with a dot', () => {
+    expect(sanitizeFilename('.hiddenfile')).toBe('_.hiddenfile');
+  });
 
-    test('should return the original string if it does not contain an environment variable', () => {
-      expect(extractEnvVariable('some_string')).toBe('some_string');
-    });
+  test('truncates long filenames', () => {
+    const longName = 'a'.repeat(300) + '.txt';
+    const result = sanitizeFilename(longName);
+    expect(result.length).toBe(255);
+    expect(result).toMatch(/^a+-abc123\.txt$/);
+  });
 
-    test('should handle empty strings', () => {
-      expect(extractEnvVariable('')).toBe('');
-    });
+  test('handles filenames with no extension', () => {
+    const longName = 'a'.repeat(300);
+    const result = sanitizeFilename(longName);
+    expect(result.length).toBe(255);
+    expect(result).toMatch(/^a+-abc123$/);
+  });
 
-    test('should handle strings without variable format', () => {
-      expect(extractEnvVariable('no_var_here')).toBe('no_var_here');
-    });
+  test('handles empty input', () => {
+    expect(sanitizeFilename('')).toBe('_');
+  });
 
-    test('should not process multiple variable formats', () => {
-      process.env.FIRST_VAR = 'first';
-      process.env.SECOND_VAR = 'second';
-      expect(extractEnvVariable('${FIRST_VAR} and ${SECOND_VAR}')).toBe(
-        '${FIRST_VAR} and ${SECOND_VAR}',
-      );
-    });
+  test('handles input with only special characters', () => {
+    expect(sanitizeFilename('@#$%^&*')).toBe('_______');
   });
 });
